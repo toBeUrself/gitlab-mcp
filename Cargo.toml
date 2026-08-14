@@ -1,0 +1,22 @@
+[package]
+name = "gitlab-mcp"
+version = "0.1.0"
+edition = "2024"
+description = "MCP server for a self-managed GitLab instance"
+license = "UNLICENSED"
+
+[dependencies]
+anyhow = "1"
+percent-encoding = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+rmcp = { version = "3.1", features = ["server", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+httpmock = "0.8"
+
+[profile.release]
+strip = "symbols"

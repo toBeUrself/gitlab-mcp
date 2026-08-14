@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+user_home_dir=${HOME:?HOME must be set}
+build_dir=$(mktemp -d "${TMPDIR:-/tmp}/gitlab-mcp-build.XXXXXX")
+dist_dir="$project_dir/dist"
+
+trap 'rm -rf "$build_dir"' EXIT
+
+# Rust dependencies can embed absolute source paths in release binaries. Remap
+# both the user home and this checkout so distributed artifacts do not reveal
+# local usernames or directory layouts.
+RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${user_home_dir}=/home/user --remap-path-prefix=${project_dir}=."
+export RUSTFLAGS
+
+cargo build \
+    --quiet \
+    --release \
+    --manifest-path "$project_dir/Cargo.toml" \
+    --target-dir "$build_dir"
+
+mkdir -p "$dist_dir"
+cp "$build_dir/release/gitlab-mcp" "$dist_dir/gitlab-mcp"
+chmod 755 "$dist_dir/gitlab-mcp"
+
+if strings "$dist_dir/gitlab-mcp" | LC_ALL=C grep -F "$user_home_dir" >/dev/null; then
+    echo "error: release binary still contains the local home path" >&2
+    exit 1
+fi
+
+echo "anonymous release: dist/gitlab-mcp"
