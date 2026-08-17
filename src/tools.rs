@@ -6,7 +6,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::client::{GitLabClient, encode_segment, env_flag};
 
@@ -47,6 +47,15 @@ impl GitLabMcp {
         response(self.client.post(&path, body).await)
     }
 
+    async fn update(&self, path: String, body: Value) -> ToolResult {
+        if !self.allow_write {
+            return tool_error(
+                "write tools are disabled; set GITLAB_ALLOW_WRITE=true to enable them",
+            );
+        }
+        response(self.client.put(&path, body).await)
+    }
+
     async fn optional_get(
         &self,
         enabled: bool,
@@ -82,6 +91,22 @@ struct SearchProjects {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct GroupProjects {
+    #[schemars(description = "Numeric group ID or full group path, for example platform/backend")]
+    group: String,
+    #[schemars(description = "Text contained in the project path or name")]
+    search: Option<String>,
+    #[schemars(description = "Include projects in descendant subgroups; defaults to false")]
+    include_subgroups: Option<bool>,
+    #[schemars(description = "Include projects shared to the group; defaults to true")]
+    with_shared: Option<bool>,
+    #[schemars(description = "Filter by archived state")]
+    archived: Option<bool>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ProjectList {
     project: String,
     #[schemars(description = "State filter such as opened, closed, merged, or all")]
@@ -95,6 +120,66 @@ struct ProjectItem {
     project: String,
     #[schemars(description = "Project-local IID, not the global database ID")]
     iid: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BranchList {
+    project: String,
+    #[schemars(description = "Branch name substring; supports ^prefix and suffix$ forms")]
+    search: Option<String>,
+    #[schemars(description = "RE2 regular expression; cannot be combined with search")]
+    regex: Option<String>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BranchRef {
+    project: String,
+    branch: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CompareRefs {
+    project: String,
+    #[schemars(description = "Source branch, tag, or commit SHA")]
+    from: String,
+    #[schemars(description = "Target branch, tag, or commit SHA")]
+    to: String,
+    #[schemars(
+        description = "Use direct from..to comparison instead of merge-base from...to; defaults to false"
+    )]
+    straight: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CommitList {
+    project: String,
+    #[schemars(description = "Branch, tag, SHA, or revision range; omit for the default branch")]
+    git_ref: Option<String>,
+    #[schemars(description = "Only commits affecting this repository path")]
+    path: Option<String>,
+    #[schemars(description = "Only commits on or after this ISO 8601 timestamp")]
+    since: Option<String>,
+    #[schemars(description = "Only commits on or before this ISO 8601 timestamp")]
+    until: Option<String>,
+    #[schemars(description = "Follow only first parents at merge commits")]
+    first_parent: Option<bool>,
+    #[schemars(description = "Include added/deleted/total statistics for each commit")]
+    with_stats: Option<bool>,
+    #[schemars(description = "Commit ordering: default or topo")]
+    order: Option<String>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CommitRef {
+    project: String,
+    #[schemars(description = "Commit SHA, branch name, or tag name")]
+    sha: String,
+    #[schemars(description = "Include commit statistics; GitLab defaults to true")]
+    stats: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -141,12 +226,34 @@ struct PipelineJobs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct PipelineId {
+    project: String,
+    pipeline_id: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct JobTrace {
+    project: String,
+    job_id: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CreateBranch {
     project: String,
     #[schemars(description = "Name of the new branch, for example feature/retry-payment")]
     branch: String,
     #[schemars(description = "Existing branch, tag, or commit SHA used as the branch start point")]
     git_ref: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateTag {
+    project: String,
+    tag_name: String,
+    #[schemars(description = "Commit SHA, branch name, or existing tag used as the tag target")]
+    git_ref: String,
+    #[schemars(description = "Annotated tag message; omit to create a lightweight tag")]
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -170,6 +277,27 @@ struct CreateMergeRequest {
     #[schemars(description = "Create the merge request as a draft")]
     draft: Option<bool>,
     remove_source_branch: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateMergeRequest {
+    project: String,
+    #[schemars(description = "Project-local merge request IID, for example 128 for !128")]
+    iid: u64,
+    title: Option<String>,
+    description: Option<String>,
+    #[schemars(
+        description = "Mark or unmark the merge request as Draft by updating its title prefix"
+    )]
+    draft: Option<bool>,
+    #[schemars(
+        description = "GitLab user IDs to set as reviewers; an empty array clears reviewers"
+    )]
+    reviewer_ids: Option<Vec<u64>>,
+    #[schemars(
+        description = "GitLab user IDs to set as assignees; an empty array clears assignees"
+    )]
+    assignee_ids: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -221,6 +349,22 @@ impl GitLabMcp {
         self.get("/projects".into(), query).await
     }
 
+    #[tool(description = "List projects that belong to a GitLab group")]
+    async fn list_group_projects(&self, Parameters(p): Parameters<GroupProjects>) -> ToolResult {
+        let mut query = pagination(p.page, p.per_page)?;
+        optional(&mut query, "search", p.search);
+        optional_bool(&mut query, "include_subgroups", p.include_subgroups);
+        optional_bool(&mut query, "with_shared", p.with_shared);
+        optional_bool(&mut query, "archived", p.archived);
+        query.push(("order_by".into(), "last_activity_at".into()));
+        query.push(("sort".into(), "desc".into()));
+        self.get(
+            format!("/groups/{}/projects", encode_segment(&p.group)),
+            query,
+        )
+        .await
+    }
+
     #[tool(description = "Get one GitLab project by numeric ID or namespace path")]
     async fn get_project(&self, Parameters(p): Parameters<ProjectId>) -> ToolResult {
         self.get(format!("/projects/{}", encode_segment(&p.project)), vec![])
@@ -250,6 +394,60 @@ impl GitLabMcp {
             vec![],
         )
         .await
+    }
+
+    #[tool(
+        description = "Update a merge request title, description, Draft state, reviewers, or assignees. Requires GITLAB_ALLOW_WRITE=true"
+    )]
+    async fn update_merge_request(
+        &self,
+        Parameters(p): Parameters<UpdateMergeRequest>,
+    ) -> ToolResult {
+        if !self.allow_write {
+            return tool_error(
+                "write tools are disabled; set GITLAB_ALLOW_WRITE=true to enable them",
+            );
+        }
+        if p.title.is_none()
+            && p.description.is_none()
+            && p.draft.is_none()
+            && p.reviewer_ids.is_none()
+            && p.assignee_ids.is_none()
+        {
+            return Err(invalid_params(
+                "at least one of title, description, draft, reviewer_ids, or assignee_ids must be provided",
+            ));
+        }
+
+        let path = format!(
+            "/projects/{}/merge_requests/{}",
+            encode_segment(&p.project),
+            p.iid
+        );
+        let mut title = p.title;
+        if let Some(draft) = p.draft {
+            if title.is_none() {
+                let current = match self.client.get(&path, &[]).await {
+                    Ok(value) => value,
+                    Err(error) => return tool_error(error.to_string()),
+                };
+                title = current
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                if title.is_none() {
+                    return tool_error("GitLab merge request response is missing title");
+                }
+            }
+            title = title.map(|value| set_draft_title(&value, draft));
+        }
+
+        let mut body = Map::new();
+        insert_json(&mut body, "title", title);
+        insert_json(&mut body, "description", p.description);
+        insert_json(&mut body, "reviewer_ids", p.reviewer_ids);
+        insert_json(&mut body, "assignee_ids", p.assignee_ids);
+        self.update(path, Value::Object(body)).await
     }
 
     #[tool(description = "List file diffs for one merge request")]
@@ -377,6 +575,97 @@ impl GitLabMcp {
         .await
     }
 
+    #[tool(
+        description = "List repository branches, optionally filtering by search text or RE2 regex"
+    )]
+    async fn list_branches(&self, Parameters(p): Parameters<BranchList>) -> ToolResult {
+        if p.search.is_some() && p.regex.is_some() {
+            return Err(invalid_params("search and regex cannot be used together"));
+        }
+        let mut query = pagination(p.page, p.per_page)?;
+        optional(&mut query, "search", p.search);
+        optional(&mut query, "regex", p.regex);
+        self.get(
+            format!(
+                "/projects/{}/repository/branches",
+                encode_segment(&p.project)
+            ),
+            query,
+        )
+        .await
+    }
+
+    #[tool(description = "Get one repository branch and its latest commit and protection status")]
+    async fn get_branch(&self, Parameters(p): Parameters<BranchRef>) -> ToolResult {
+        self.get(
+            format!(
+                "/projects/{}/repository/branches/{}",
+                encode_segment(&p.project),
+                encode_segment(&p.branch)
+            ),
+            vec![],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Compare two branches, tags, or commits and return commits and file diffs"
+    )]
+    async fn compare_refs(&self, Parameters(p): Parameters<CompareRefs>) -> ToolResult {
+        let mut query = vec![("from".into(), p.from), ("to".into(), p.to)];
+        optional_bool(&mut query, "straight", p.straight);
+        self.get(
+            format!(
+                "/projects/{}/repository/compare",
+                encode_segment(&p.project)
+            ),
+            query,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "List repository commits for a branch, tag, SHA, revision range, or default branch"
+    )]
+    async fn list_commits(&self, Parameters(p): Parameters<CommitList>) -> ToolResult {
+        if let Some(order) = p.order.as_deref()
+            && !matches!(order, "default" | "topo")
+        {
+            return Err(invalid_params("order must be default or topo"));
+        }
+        let mut query = pagination(p.page, p.per_page)?;
+        optional(&mut query, "ref_name", p.git_ref);
+        optional(&mut query, "path", p.path);
+        optional(&mut query, "since", p.since);
+        optional(&mut query, "until", p.until);
+        optional(&mut query, "order", p.order);
+        optional_bool(&mut query, "first_parent", p.first_parent);
+        optional_bool(&mut query, "with_stats", p.with_stats);
+        self.get(
+            format!(
+                "/projects/{}/repository/commits",
+                encode_segment(&p.project)
+            ),
+            query,
+        )
+        .await
+    }
+
+    #[tool(description = "Get one commit by SHA, branch name, or tag name")]
+    async fn get_commit(&self, Parameters(p): Parameters<CommitRef>) -> ToolResult {
+        let mut query = Vec::new();
+        optional_bool(&mut query, "stats", p.stats);
+        self.get(
+            format!(
+                "/projects/{}/repository/commits/{}",
+                encode_segment(&p.project),
+                encode_segment(&p.sha)
+            ),
+            query,
+        )
+        .await
+    }
+
     #[tool(description = "List files and directories in a repository tree")]
     async fn list_repository_tree(&self, Parameters(p): Parameters<RepositoryTree>) -> ToolResult {
         let mut query = pagination(p.page, p.per_page)?;
@@ -419,6 +708,19 @@ impl GitLabMcp {
         .await
     }
 
+    #[tool(description = "Get one GitLab pipeline by project and pipeline ID")]
+    async fn get_pipeline(&self, Parameters(p): Parameters<PipelineId>) -> ToolResult {
+        self.get(
+            format!(
+                "/projects/{}/pipelines/{}",
+                encode_segment(&p.project),
+                p.pipeline_id
+            ),
+            vec![],
+        )
+        .await
+    }
+
     #[tool(description = "List jobs in a pipeline")]
     async fn list_pipeline_jobs(&self, Parameters(p): Parameters<PipelineJobs>) -> ToolResult {
         let query = pagination(p.page, p.per_page)?;
@@ -434,6 +736,21 @@ impl GitLabMcp {
     }
 
     #[tool(
+        description = "Get the complete text trace for one GitLab CI job; response size limits still apply"
+    )]
+    async fn get_job_trace(&self, Parameters(p): Parameters<JobTrace>) -> ToolResult {
+        self.get(
+            format!(
+                "/projects/{}/jobs/{}/trace",
+                encode_segment(&p.project),
+                p.job_id
+            ),
+            vec![],
+        )
+        .await
+    }
+
+    #[tool(
         description = "Create a repository branch from an existing branch, tag, or commit SHA. Requires GITLAB_ALLOW_WRITE=true"
     )]
     async fn create_branch(&self, Parameters(p): Parameters<CreateBranch>) -> ToolResult {
@@ -443,6 +760,21 @@ impl GitLabMcp {
                 encode_segment(&p.project)
             ),
             json!({"branch": p.branch, "ref": p.git_ref}),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Create a lightweight or annotated repository tag. Requires GITLAB_ALLOW_WRITE=true"
+    )]
+    async fn create_tag(&self, Parameters(p): Parameters<CreateTag>) -> ToolResult {
+        let mut body = Map::new();
+        body.insert("tag_name".into(), Value::String(p.tag_name));
+        body.insert("ref".into(), Value::String(p.git_ref));
+        insert_json(&mut body, "message", p.message);
+        self.write(
+            format!("/projects/{}/repository/tags", encode_segment(&p.project)),
+            Value::Object(body),
         )
         .await
     }
@@ -502,7 +834,7 @@ impl GitLabMcp {
 
 #[tool_handler(
     name = "gitlab-mcp",
-    version = "0.2.0",
+    version = "0.3.0",
     instructions = "Access a self-managed GitLab instance. Prefer read tools first. Write tools require explicit server-side opt-in."
 )]
 impl ServerHandler for GitLabMcp {}
@@ -526,6 +858,42 @@ fn optional(query: &mut Vec<(String, String)>, name: &str, value: Option<String>
     if let Some(value) = value.filter(|value| !value.is_empty()) {
         query.push((name.into(), value));
     }
+}
+
+fn optional_bool(query: &mut Vec<(String, String)>, name: &str, value: Option<bool>) {
+    if let Some(value) = value {
+        query.push((name.into(), value.to_string()));
+    }
+}
+
+fn insert_json<T: serde::Serialize>(body: &mut Map<String, Value>, name: &str, value: Option<T>) {
+    if let Some(value) = value {
+        body.insert(name.into(), json!(value));
+    }
+}
+
+fn set_draft_title(title: &str, draft: bool) -> String {
+    let title = strip_draft_prefix(title.trim_start());
+    if draft {
+        format!("Draft: {title}")
+    } else {
+        title.to_owned()
+    }
+}
+
+fn strip_draft_prefix(title: &str) -> &str {
+    const PREFIXES: [&str; 8] = [
+        "Draft:", "Draft -", "[Draft]", "(Draft)", "WIP:", "WIP -", "[WIP]", "(WIP)",
+    ];
+    PREFIXES
+        .iter()
+        .find_map(|prefix| {
+            title
+                .get(..prefix.len())
+                .filter(|value| value.eq_ignore_ascii_case(prefix))
+                .map(|_| title[prefix.len()..].trim_start())
+        })
+        .unwrap_or(title)
 }
 
 fn response(result: anyhow::Result<Value>) -> ToolResult {
@@ -683,6 +1051,236 @@ mod tests {
             .unwrap();
         mock.assert();
         assert_ne!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn repository_inspection_tools_map_paths_and_queries() {
+        let server = MockServer::start();
+        let branches = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/repository/branches")
+                .query_param("page", "2")
+                .query_param("per_page", "10")
+                .query_param("search", "release");
+            then.status(200).json_body(json!([{"name": "release"}]));
+        });
+        let branch = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/repository/branches/release%2Fqa");
+            then.status(200).json_body(json!({"name": "release/qa"}));
+        });
+        let compare = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/repository/compare")
+                .query_param("from", "release/qa")
+                .query_param("to", "release/prod")
+                .query_param("straight", "true");
+            then.status(200)
+                .json_body(json!({"commits": [], "diffs": []}));
+        });
+        let commits = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/repository/commits")
+                .query_param("ref_name", "release/prod")
+                .query_param("first_parent", "true")
+                .query_param("page", "1")
+                .query_param("per_page", "25");
+            then.status(200).json_body(json!([{"id": "abc123"}]));
+        });
+        let commit = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/repository/commits/abc123")
+                .query_param("stats", "false");
+            then.status(200).json_body(json!({"id": "abc123"}));
+        });
+        let mcp =
+            GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 64 * 1024), false);
+
+        mcp.list_branches(Parameters(BranchList {
+            project: "team/service".into(),
+            search: Some("release".into()),
+            regex: None,
+            page: Some(2),
+            per_page: Some(10),
+        }))
+        .await
+        .unwrap();
+        mcp.get_branch(Parameters(BranchRef {
+            project: "team/service".into(),
+            branch: "release/qa".into(),
+        }))
+        .await
+        .unwrap();
+        mcp.compare_refs(Parameters(CompareRefs {
+            project: "team/service".into(),
+            from: "release/qa".into(),
+            to: "release/prod".into(),
+            straight: Some(true),
+        }))
+        .await
+        .unwrap();
+        mcp.list_commits(Parameters(CommitList {
+            project: "team/service".into(),
+            git_ref: Some("release/prod".into()),
+            path: None,
+            since: None,
+            until: None,
+            first_parent: Some(true),
+            with_stats: None,
+            order: None,
+            page: Some(1),
+            per_page: Some(25),
+        }))
+        .await
+        .unwrap();
+        mcp.get_commit(Parameters(CommitRef {
+            project: "team/service".into(),
+            sha: "abc123".into(),
+            stats: Some(false),
+        }))
+        .await
+        .unwrap();
+
+        branches.assert();
+        branch.assert();
+        compare.assert();
+        commits.assert();
+        commit.assert();
+    }
+
+    #[tokio::test]
+    async fn group_and_cicd_tools_map_paths_and_trace_text() {
+        let server = MockServer::start();
+        let group = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/groups/platform%2Fbackend/projects")
+                .query_param("include_subgroups", "true")
+                .query_param("page", "1")
+                .query_param("per_page", "30");
+            then.status(200).json_body(json!([{"id": 42}]));
+        });
+        let pipeline = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/pipelines/987");
+            then.status(200).json_body(json!({"id": 987}));
+        });
+        let trace = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/jobs/654/trace");
+            then.status(200).body("compile\ntest failed\n");
+        });
+        let mcp =
+            GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 64 * 1024), false);
+
+        mcp.list_group_projects(Parameters(GroupProjects {
+            group: "platform/backend".into(),
+            search: None,
+            include_subgroups: Some(true),
+            with_shared: None,
+            archived: None,
+            page: None,
+            per_page: None,
+        }))
+        .await
+        .unwrap();
+        mcp.get_pipeline(Parameters(PipelineId {
+            project: "team/service".into(),
+            pipeline_id: 987,
+        }))
+        .await
+        .unwrap();
+        let result = mcp
+            .get_job_trace(Parameters(JobTrace {
+                project: "team/service".into(),
+                job_id: 654,
+            }))
+            .await
+            .unwrap();
+
+        group.assert();
+        pipeline.assert();
+        trace.assert();
+        let result = serde_json::to_value(result).unwrap();
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("test failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_merge_request_fetches_title_to_remove_draft_prefix() {
+        let server = MockServer::start();
+        let get = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v4/projects/team%2Fservice/merge_requests/128");
+            then.status(200)
+                .json_body(json!({"title": "WIP: Retry payment"}));
+        });
+        let update = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/api/v4/projects/team%2Fservice/merge_requests/128")
+                .json_body(json!({
+                    "title": "Retry payment",
+                    "description": "Ready for review",
+                    "reviewer_ids": [10, 11],
+                    "assignee_ids": []
+                }));
+            then.status(200)
+                .json_body(json!({"iid": 128, "draft": false}));
+        });
+        let mcp =
+            GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 64 * 1024), true);
+        let result = mcp
+            .update_merge_request(Parameters(UpdateMergeRequest {
+                project: "team/service".into(),
+                iid: 128,
+                title: None,
+                description: Some("Ready for review".into()),
+                draft: Some(false),
+                reviewer_ids: Some(vec![10, 11]),
+                assignee_ids: Some(vec![]),
+            }))
+            .await
+            .unwrap();
+        get.assert();
+        update.assert();
+        assert_ne!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn creates_annotated_tag_when_writes_are_enabled() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v4/projects/team%2Fservice/repository/tags")
+                .json_body(json!({
+                    "tag_name": "v1.2.0",
+                    "ref": "abc123",
+                    "message": "Production release"
+                }));
+            then.status(201).json_body(json!({"name": "v1.2.0"}));
+        });
+        let mcp = GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 4096), true);
+        let result = mcp
+            .create_tag(Parameters(CreateTag {
+                project: "team/service".into(),
+                tag_name: "v1.2.0".into(),
+                git_ref: "abc123".into(),
+                message: Some("Production release".into()),
+            }))
+            .await
+            .unwrap();
+        mock.assert();
+        assert_ne!(result.is_error, Some(true));
+    }
+
+    #[test]
+    fn draft_title_helpers_support_gitlab_prefixes() {
+        assert_eq!(set_draft_title("Feature", true), "Draft: Feature");
+        assert_eq!(set_draft_title("[Draft] Feature", true), "Draft: Feature");
+        assert_eq!(set_draft_title("wip: Feature", false), "Feature");
     }
 
     #[tokio::test]

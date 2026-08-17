@@ -2,7 +2,7 @@
 
 面向公司内部自建 GitLab 的本机 MCP Server。服务通过标准输入输出（stdio）与 MCP 客户端通信，并通过 GitLab REST API v4 完成实际操作。
 
-当前提供 18 个工具，覆盖项目、Merge Request、Issue、代码文件、分支、Pipeline 和评论等高频研发场景。写操作默认关闭，不提供合并 MR、删除资源、修改仓库文件等高风险能力。
+当前提供 28 个工具，覆盖项目、Merge Request、Issue、代码文件、分支/提交比较、Tag、Pipeline 和 Job 日志等高频研发场景。写操作默认关闭，不提供合并 MR、删除资源、修改仓库文件等高风险能力。
 
 方案与安全边界详见 [DESIGN.md](./DESIGN.md)。
 
@@ -13,7 +13,7 @@
 推荐为 MCP 单独创建最小权限的 Project Access Token 或 Personal Access Token：
 
 - 只使用查询工具：授予 `read_api` scope；
-- 需要创建分支、Issue、MR 或评论：授予 `api` scope，并通过 `GITLAB_ALLOW_WRITE=true` 显式开启写工具；
+- 需要创建分支/Tag、Issue、MR、修改 MR 或评论：授予 `api` scope，并通过 `GITLAB_ALLOW_WRITE=true` 显式开启写工具；
 - 不要把 Token 写进仓库或通过命令行参数传递。
 
 ### 2. 构建
@@ -59,7 +59,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 }
 ```
 
-允许创建分支、Issue、MR 和评论：
+允许上述受限写操作：
 
 ```json
 {
@@ -77,7 +77,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 }
 ```
 
-保存配置并重启 MCP 客户端。客户端成功连接后应能发现下文列出的 18 个工具。
+保存配置并重启 MCP 客户端。客户端成功连接后应能发现下文列出的 28 个工具。
 
 ### 4. 开始使用
 
@@ -86,9 +86,11 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 ```text
 列出我最近活跃的 GitLab 项目。
 查看 team/payment 项目当前打开的 MR。
+比较 team/payment 的 qa2 和 main 是否完全同步。
+确认 Commit abc123 是否已进入 team/payment 的 release 分支。
 读取 team/payment 的 main 分支上 src/main.rs。
 从 team/payment 的 main 创建 feature/retry-payment 分支。
-检查 team/payment 最近失败的 Pipeline 和对应 Job。
+检查 team/payment 最近失败的 Pipeline、对应 Job 和日志。
 在 team/payment 创建一个标题为“修复支付回调超时”的 Issue。
 给 team/payment 的 MR !128 评论“已完成本地验证”。
 ```
@@ -102,7 +104,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 | `GITLAB_URL` | 是 | 无 | GitLab 实例根地址，例如 `https://gitlab.example.internal`；也可直接填写以 `/api/v4` 结尾的地址 |
 | `GITLAB_TOKEN` | 是 | 无 | GitLab 访问令牌，仅作为 HTTP Header 发送 |
 | `GITLAB_TOKEN_TYPE` | 否 | `private` | `private`/`pat` 使用 `PRIVATE-TOKEN`，`oauth`/`bearer` 使用 Bearer Token，`job` 使用 `JOB-TOKEN` |
-| `GITLAB_ALLOW_WRITE` | 否 | `false` | `1`、`true` 或 `yes` 时允许五个写工具，其余值均视为关闭 |
+| `GITLAB_ALLOW_WRITE` | 否 | `false` | `1`、`true` 或 `yes` 时允许七个受限写工具，其余值均视为关闭 |
 | `GITLAB_INSECURE` | 否 | `false` | `true` 时接受无效 TLS 证书，仅用于确有需要且风险可控的内网环境 |
 | `GITLAB_MAX_RESPONSE_BYTES` | 否 | `1048576` | 单次 GitLab 响应最大字节数，必须大于 0；用于限制 MCP 上下文消耗 |
 
@@ -154,6 +156,23 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 
 - GitLab API：`GET /projects/:id`。
 - 示例提示：`查看 platform/order-service 的项目详情。`
+
+#### `list_group_projects`
+
+列出指定 GitLab 群组下的项目，固定按最近活动时间倒序排列。
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `group` | 是 | string | 无 | 数字群组 ID 或完整群组路径，例如 `platform/backend` |
+| `search` | 否 | string | 无 | 按项目名称或路径搜索 |
+| `include_subgroups` | 否 | boolean | `false` | 是否包含子群组项目 |
+| `with_shared` | 否 | boolean | `true` | 是否包含共享给该群组的项目 |
+| `archived` | 否 | boolean | 无 | 按归档状态过滤 |
+| `page` | 否 | integer | `1` | 页码 |
+| `per_page` | 否 | integer | `30` | 每页数量，1～100 |
+
+- GitLab API：`GET /groups/:id/projects`。
+- 示例提示：`列出 platform 群组及其子群组中最近活跃的项目。`
 
 ### Merge Request
 
@@ -242,6 +261,25 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 - GitLab API：`POST /projects/:id/merge_requests`。
 - 示例提示：`从 feature/retry 合并到 main，创建一个草稿 MR，标题为“增加失败重试”。`
 
+#### `update_merge_request`（写操作）
+
+修改 MR 的标题、描述、Draft 状态、reviewer 或 assignee。需要 `GITLAB_ALLOW_WRITE=true`；至少要提供一个待修改字段。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `iid` | 是 | integer | 项目内 MR 编号 |
+| `title` | 否 | string | 新标题 |
+| `description` | 否 | string | 新描述；传空字符串可清空 |
+| `draft` | 否 | boolean | `true` 转为 Draft，`false` 取消 Draft |
+| `reviewer_ids` | 否 | integer[] | GitLab 用户 ID 数组；空数组清空 reviewer |
+| `assignee_ids` | 否 | integer[] | GitLab 用户 ID 数组；空数组清空 assignee |
+
+GitLab REST 更新接口没有独立的 Draft 字段，工具通过标题前缀兼容处理。仅修改 `draft` 时会先读取当前标题，再增加或移除 `Draft:`/`WIP:` 等前缀。
+
+- GitLab API：`PUT /projects/:id/merge_requests/:iid`。
+- 示例提示：`把 platform/order-service 的 MR !128 转为非 Draft，并设置 reviewer ID 为 42 和 57。`
+
 #### `add_merge_request_note`（写操作）
 
 给 MR 添加普通评论，不支持行级 diff 评论。
@@ -313,6 +351,79 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 
 ### 仓库内容
 
+#### `list_branches`
+
+列出项目分支，可使用文本或 RE2 正则过滤，两种过滤方式不能同时使用。
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `project` | 是 | string | 无 | 项目 ID 或完整路径 |
+| `search` | 否 | string | 无 | 分支名文本，支持 `^prefix` 和 `suffix$` |
+| `regex` | 否 | string | 无 | RE2 正则表达式 |
+| `page` | 否 | integer | `1` | 页码 |
+| `per_page` | 否 | integer | `30` | 每页数量，1～100 |
+
+- GitLab API：`GET /projects/:id/repository/branches`。
+- 示例提示：`列出 platform/order-service 中以 release/ 开头的分支。`
+
+#### `get_branch`
+
+获取单个分支的最新 Commit、保护状态和 Web 地址等信息。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `branch` | 是 | string | 分支名，包含 `/` 时由服务自动编码 |
+
+- GitLab API：`GET /projects/:id/repository/branches/:branch`。
+- 示例提示：`查看 platform/order-service 的 qa2 分支当前指向哪个 Commit。`
+
+#### `compare_refs`
+
+比较两个分支、Tag 或 Commit，返回 Commit 和文件 diff。
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `project` | 是 | string | 无 | 项目 ID 或完整路径 |
+| `from` | 是 | string | 无 | 源分支、Tag 或 Commit SHA |
+| `to` | 是 | string | 无 | 目标分支、Tag 或 Commit SHA |
+| `straight` | 否 | boolean | `false` | `false` 按 merge-base 比较 `from...to`；`true` 直接比较 `from..to` |
+
+- GitLab API：`GET /projects/:id/repository/compare`。
+- 示例提示：`直接比较 platform/order-service 的 qa2 和 main，确认环境分支是否同步。`
+
+#### `list_commits`
+
+列出默认分支或指定 ref 的 Commit，可按路径和时间范围筛选。
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `project` | 是 | string | 无 | 项目 ID 或完整路径 |
+| `git_ref` | 否 | string | 默认分支 | 分支、Tag、SHA 或 revision range |
+| `path` | 否 | string | 无 | 只返回影响该仓库路径的 Commit |
+| `since` / `until` | 否 | string | 无 | ISO 8601 起止时间 |
+| `first_parent` | 否 | boolean | `false` | 在合并 Commit 中只跟随第一父节点 |
+| `with_stats` | 否 | boolean | `false` | 是否包含增删行统计 |
+| `order` | 否 | string | `default` | `default` 或 `topo` |
+| `page` | 否 | integer | `1` | 页码 |
+| `per_page` | 否 | integer | `30` | 每页数量，1～100 |
+
+- GitLab API：`GET /projects/:id/repository/commits`。
+- 示例提示：`列出 platform/order-service 的 release 分支最近 20 个 Commit。`
+
+#### `get_commit`
+
+按 SHA、分支名或 Tag 名获取一个 Commit，适合确认指定 Commit 是否可从目标 ref 解析。
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `project` | 是 | string | 无 | 项目 ID 或完整路径 |
+| `sha` | 是 | string | 无 | Commit SHA、分支名或 Tag 名 |
+| `stats` | 否 | boolean | GitLab 默认值 | 是否包含 Commit 统计 |
+
+- GitLab API：`GET /projects/:id/repository/commits/:sha`。
+- 示例提示：`查看 platform/order-service 的 Commit abc123 详情。`
+
 #### `list_repository_tree`
 
 列出仓库目录中的文件和子目录。
@@ -355,6 +466,20 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 - GitLab API：`POST /projects/:id/repository/branches`。
 - 示例提示：`从 platform/order-service 的 main 创建 feature/retry-payment 分支。`
 
+#### `create_tag`（写操作）
+
+从分支、Commit SHA 或已有 Tag 创建新 Tag。需要 `GITLAB_ALLOW_WRITE=true` 和对应仓库权限；Protected Tag 规则仍由 GitLab 强制执行。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `tag_name` | 是 | string | 新 Tag 名，例如 `v2.3.0` |
+| `git_ref` | 是 | string | 目标分支、Commit SHA 或已有 Tag |
+| `message` | 否 | string | 提供时创建 annotated tag；省略时创建 lightweight tag |
+
+- GitLab API：`POST /projects/:id/repository/tags`。
+- 示例提示：`从 platform/order-service 的 Commit abc123 创建 v2.3.0 Tag，消息为“生产发布 2.3.0”。`
+
 ### CI/CD
 
 #### `list_pipelines`
@@ -372,6 +497,18 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 - GitLab API：`GET /projects/:id/pipelines`。
 - 示例提示：`查找 platform/order-service 的 main 分支最近失败的 Pipeline。`
 
+#### `get_pipeline`
+
+获取单个 Pipeline 的详细状态、ref、SHA、耗时和触发用户等 GitLab 返回字段。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `pipeline_id` | 是 | integer | Pipeline ID |
+
+- GitLab API：`GET /projects/:id/pipelines/:pipeline_id`。
+- 示例提示：`查看 platform/order-service 的 Pipeline 98765 详情。`
+
 #### `list_pipeline_jobs`
 
 列出一个 Pipeline 中的 Job，用于继续定位 CI 失败阶段。
@@ -385,6 +522,18 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 
 - GitLab API：`GET /projects/:id/pipelines/:pipeline_id/jobs`。
 - 示例提示：`查看 platform/order-service 的 Pipeline 98765 中失败的 Job。`
+
+#### `get_job_trace`
+
+读取一个 GitLab CI Job 的完整文本日志。日志仍受 `GITLAB_MAX_RESPONSE_BYTES` 限制，超限时工具会拒绝返回，避免大量日志直接占用模型上下文。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `job_id` | 是 | integer | Job ID，来自 `list_pipeline_jobs` 返回结果 |
+
+- GitLab API：`GET /projects/:id/jobs/:job_id/trace`。
+- 示例提示：`读取 platform/order-service 的 Job 456789 日志并定位失败原因。`
 
 ## 推荐工作流
 
@@ -402,11 +551,18 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 3. 必要时用 `get_repository_file` 获取目标分支上的完整文件上下文。
 4. 用户确认后再用 `add_merge_request_note` 发表评论。
 
+### 环境分支同步确认
+
+1. 用 `get_branch` 读取两个环境分支当前的 Commit SHA。
+2. 用 `compare_refs` 并设置 `straight=true` 直接比较两个 ref。
+3. 查看返回的 `compare_same_ref`、Commit 和 diff，确认是否同步及差异方向。
+4. 需要核对某个 Commit 时，先用 `get_commit` 确认 SHA，再用 `compare_refs` 将该 SHA 与目标分支比较；`list_commits` 可用于浏览目标分支的提交历史。
+
 ### CI 失败定位
 
 1. `list_pipelines` 按分支和 `failed` 状态定位 Pipeline。
-2. `list_pipeline_jobs` 查找失败 Job。
-3. 当前版本不读取 Job trace；需要日志时从返回的 `web_url` 打开 GitLab 页面查看。
+2. `get_pipeline` 查看 Pipeline 详情，`list_pipeline_jobs` 查找失败 Job。
+3. `get_job_trace` 读取失败 Job 日志并定位错误；日志超过响应上限时改用 GitLab Web 页面查看。
 
 ## 安全建议
 

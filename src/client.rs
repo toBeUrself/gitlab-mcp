@@ -85,6 +85,10 @@ impl GitLabClient {
         self.send(Method::POST, path, &[], Some(body)).await
     }
 
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        self.send(Method::PUT, path, &[], Some(body)).await
+    }
+
     pub fn max_response_bytes(&self) -> usize {
         self.max_response_bytes
     }

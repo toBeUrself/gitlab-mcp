@@ -11,7 +11,7 @@
 ### 2.1 目标
 
 - 支持自建 GitLab 实例，而不是绑定 GitLab.com。
-- 覆盖项目检索、MR 评审、Issue 跟踪、代码读取和 CI 排查等高频流程。
+- 覆盖项目检索、MR 评审与维护、Issue 跟踪、分支/提交核对、Tag 创建和 CI 排查等高频流程。
 - 使用 MCP 标准协议，让不同 MCP 客户端可以复用。
 - 凭据不进入源码、命令行参数和工具返回结果。
 - 写操作显式开启，保持默认只读。
@@ -110,7 +110,7 @@ flowchart LR
 - 设置 30 秒 HTTP 超时；
 - 可选支持自签名证书；
 - 在解析前检查 `Content-Length`，解析后再次检查实际响应大小；
-- 把非 2xx 响应转换为包含 HTTP 状态和 GitLab 错误正文的工具错误；
+- 封装 GET、POST 和 PUT 请求，把非 2xx 响应转换为包含 HTTP 状态和 GitLab 错误正文的工具错误；
 - 对项目路径和文件路径进行单路径段百分号编码。
 
 ### 5.3 工具层 `src/tools.rs`
@@ -120,6 +120,7 @@ flowchart LR
 - 通过 `rmcp` 宏注册工具并生成 JSON Schema；
 - 把工具参数映射到 GitLab API 路径、查询参数和 JSON Body；
 - 为 `review_merge_request_context` 并发聚合多个只读端点，并允许可选端点部分失败；
+- 将 MR Draft 状态兼容映射为标题前缀，仅改 Draft 时先读取当前标题；
 - 统一校验 `page >= 1` 和 `1 <= per_page <= 100`；
 - 对写工具执行 `GITLAB_ALLOW_WRITE` 检查；
 - 把 GitLab JSON 格式化为 MCP 文本内容；
@@ -131,24 +132,42 @@ flowchart LR
 | --- | --- | --- | --- |
 | `get_current_user` | GET | `/user` | 读 |
 | `list_projects` | GET | `/projects` | 读 |
+| `list_group_projects` | GET | `/groups/:id/projects` | 读 |
 | `get_project` | GET | `/projects/:id` | 读 |
 | `list_merge_requests` | GET | `/projects/:id/merge_requests` | 读 |
 | `get_merge_request` | GET | `/projects/:id/merge_requests/:iid` | 读 |
 | `list_merge_request_diffs` | GET | `/projects/:id/merge_requests/:iid/diffs` | 读 |
 | `review_merge_request_context` | GET（聚合） | MR、diffs、commits、discussions、related issues、pipelines、approvals | 读 |
+| `update_merge_request` | PUT | `/projects/:id/merge_requests/:iid` | 写 |
 | `list_issues` | GET | `/projects/:id/issues` | 读 |
 | `get_issue` | GET | `/projects/:id/issues/:iid` | 读 |
 | `list_repository_tree` | GET | `/projects/:id/repository/tree` | 读 |
 | `get_repository_file` | GET | `/projects/:id/repository/files/:file_path` | 读 |
+| `list_branches` | GET | `/projects/:id/repository/branches` | 读 |
+| `get_branch` | GET | `/projects/:id/repository/branches/:branch` | 读 |
+| `compare_refs` | GET | `/projects/:id/repository/compare` | 读 |
+| `list_commits` | GET | `/projects/:id/repository/commits` | 读 |
+| `get_commit` | GET | `/projects/:id/repository/commits/:sha` | 读 |
 | `create_branch` | POST | `/projects/:id/repository/branches` | 写 |
+| `create_tag` | POST | `/projects/:id/repository/tags` | 写 |
 | `list_pipelines` | GET | `/projects/:id/pipelines` | 读 |
+| `get_pipeline` | GET | `/projects/:id/pipelines/:pipeline_id` | 读 |
 | `list_pipeline_jobs` | GET | `/projects/:id/pipelines/:pipeline_id/jobs` | 读 |
+| `get_job_trace` | GET | `/projects/:id/jobs/:job_id/trace` | 读 |
 | `create_issue` | POST | `/projects/:id/issues` | 写 |
 | `create_merge_request` | POST | `/projects/:id/merge_requests` | 写 |
 | `add_issue_note` | POST | `/projects/:id/issues/:iid/notes` | 写 |
 | `add_merge_request_note` | POST | `/projects/:id/merge_requests/:iid/notes` | 写 |
 
 工具的完整参数定义和使用示例见 [README.md](./README.md#工具详情)。
+
+### 6.1 关键语义
+
+- `compare_refs` 默认使用 merge-base 语义（`from...to`），适合查看两个开发线的分叉变更；确认环境分支直接差异时使用 `straight=true`（`from..to`）。
+- `update_merge_request` 不伪造 GitLab REST 中不存在的 Draft 字段，而是管理 GitLab 识别的 `Draft:`/`WIP:` 标题前缀。仅修改 Draft 时会先 GET 当前 MR，再 PUT 新标题。
+- `reviewer_ids` 和 `assignee_ids` 仅接受 GitLab 用户 ID；省略代表不修改，空数组代表清空。
+- `create_tag` 省略 `message` 创建 lightweight tag，提供 `message` 则创建 annotated tag。
+- `get_job_trace` 返回文本日志，与 JSON API 共用同一响应大小上限。
 
 ## 7. 请求流程
 
@@ -235,6 +254,8 @@ sequenceDiagram
 | 模型误执行写工具 | 默认禁写、客户端确认、最小 GitLab 权限 |
 | 项目数据进入外部模型上下文 | 由公司数据政策约束客户端和模型选择；对机密项目禁用或使用合规模型 |
 | 大 diff 消耗上下文 | 1 MiB 默认响应上限；缩小查询范围；后续支持 diff 分页/裁剪 |
+| Job trace 过大或包含敏感日志 | 复用响应大小上限；仅按明确 Job ID 读取；敏感项目由数据政策约束 |
+| 创建 Tag 或修改 MR 造成流程变更 | 默认禁写、最小 Token 权限、GitLab Protected Tag/角色权限作为最终防线 |
 | `GITLAB_INSECURE` 导致中间人风险 | 默认关闭；优先部署公司 CA |
 | GitLab API 返回敏感错误正文 | 仅返回给本地 MCP 客户端，不持久化；后续可增加错误字段脱敏 |
 
@@ -252,7 +273,7 @@ HTTP 非 2xx 响应会包含状态码和 GitLab 返回的 JSON/文本，但不�
 
 ## 12. 性能与容量
 
-- 每个工具调用对应一个 GitLab HTTP 请求，没有额外缓存。
+- 大多数工具调用对应一个 GitLab HTTP 请求；`review_merge_request_context` 会并发聚合多个请求，仅切换 Draft 的 `update_merge_request` 会执行一次 GET 加一次 PUT。
 - 默认每页 30 条，最大 100 条。
 - HTTP 请求超时 30 秒。
 - 默认单响应上限 1 MiB。
@@ -267,9 +288,13 @@ HTTP 非 2xx 响应会包含状态码和 GitLab 返回的 JSON/文本，但不�
 - GitLab 根地址到 API v4 地址的规范化；
 - 项目路径和文件路径编码；
 - 写操作默认关闭；
-- 创建分支不支持覆盖已有分支，且继续受 GitLab Protected Branch 规则约束；
+- 写操作默认禁用，开启后创建分支的请求路径与请求体正确；
 - 分页边界校验；
 - 使用本地 Mock Server 验证实际 HTTP 路径；
+- 分支列表/详情、ref 比较和 Commit 查询的路径与查询参数；
+- 群组项目、Pipeline 详情和非 JSON Job trace 的响应处理；
+- MR PUT 更新、Draft 前缀增删和空数组语义；
+- 写开关开启后创建 annotated tag 的请求体；
 - 完整 MR 评审上下文的并发聚合和统计摘要；
 - 可选 MR 端点失败时保留核心数据，并返回 partial/warnings；
 - MCP initialize 与 tools/list 的 stdio 冒烟验证；
@@ -299,7 +324,7 @@ HTTP 非 2xx 响应会包含状态码和 GitLab 返回的 JSON/文本，但不�
 
 按优先级建议：
 
-1. 增加 Job trace 的受限读取和内容截断，用于完整 CI 故障定位；
+1. 为 Job trace 增加可配置的头尾截断，在响应上限内保留关键日志；
 2. 增加 MR discussion/行级评论，支持正式代码评审；
 3. 增加当前用户待处理 MR、待办事项等聚合查询；
 4. 支持从系统 Keychain 或企业密钥管理服务读取 Token；
@@ -316,6 +341,6 @@ HTTP 非 2xx 响应会包含状态码和 GitLab 返回的 JSON/文本，但不�
 | GitLab 接口 | REST API v4 | 自建版本兼容性和资源覆盖更直接 |
 | 工具设计 | 定向工具 | 可控、可描述、可审计，避免任意 API 透传 |
 | 默认权限 | 只读 | 降低模型误操作风险 |
-| 写入范围 | 创建 Issue/MR/评论 | 可追踪、可人工回滚，且覆盖主要协作需求 |
+| 写入范围 | 创建分支/Tag/Issue/MR、更新 MR、发表评论 | 均为定向 API 且受写开关与 GitLab 权限双重约束 |
 | 返回格式 | 格式化 JSON 文本 | 保留 GitLab 原始字段，兼容不同 MCP 客户端 |
 | 缓存 | 无 | 保持数据实时性并降低首版复杂度 |
