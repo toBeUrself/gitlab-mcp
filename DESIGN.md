@@ -140,6 +140,7 @@ flowchart LR
 | `get_issue` | GET | `/projects/:id/issues/:iid` | 读 |
 | `list_repository_tree` | GET | `/projects/:id/repository/tree` | 读 |
 | `get_repository_file` | GET | `/projects/:id/repository/files/:file_path` | 读 |
+| `create_branch` | POST | `/projects/:id/repository/branches` | 写 |
 | `list_pipelines` | GET | `/projects/:id/pipelines` | 读 |
 | `list_pipeline_jobs` | GET | `/projects/:id/pipelines/:pipeline_id/jobs` | 读 |
 | `create_issue` | POST | `/projects/:id/issues` | 写 |
@@ -266,6 +267,7 @@ HTTP 非 2xx 响应会包含状态码和 GitLab 返回的 JSON/文本，但不�
 - GitLab 根地址到 API v4 地址的规范化；
 - 项目路径和文件路径编码；
 - 写操作默认关闭；
+- 创建分支不支持覆盖已有分支，且继续受 GitLab Protected Branch 规则约束；
 - 分页边界校验；
 - 使用本地 Mock Server 验证实际 HTTP 路径；
 - 完整 MR 评审上下文的并发聚合和统计摘要；

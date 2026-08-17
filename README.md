@@ -2,7 +2,7 @@
 
 面向公司内部自建 GitLab 的本机 MCP Server。服务通过标准输入输出（stdio）与 MCP 客户端通信，并通过 GitLab REST API v4 完成实际操作。
 
-当前提供 17 个工具，覆盖项目、Merge Request、Issue、代码文件、Pipeline 和评论等高频研发场景。写操作默认关闭，不提供合并 MR、删除资源、修改仓库文件等高风险能力。
+当前提供 18 个工具，覆盖项目、Merge Request、Issue、代码文件、分支、Pipeline 和评论等高频研发场景。写操作默认关闭，不提供合并 MR、删除资源、修改仓库文件等高风险能力。
 
 方案与安全边界详见 [DESIGN.md](./DESIGN.md)。
 
@@ -13,7 +13,7 @@
 推荐为 MCP 单独创建最小权限的 Project Access Token 或 Personal Access Token：
 
 - 只使用查询工具：授予 `read_api` scope；
-- 需要创建 Issue、MR 或评论：授予 `api` scope，并通过 `GITLAB_ALLOW_WRITE=true` 显式开启写工具；
+- 需要创建分支、Issue、MR 或评论：授予 `api` scope，并通过 `GITLAB_ALLOW_WRITE=true` 显式开启写工具；
 - 不要把 Token 写进仓库或通过命令行参数传递。
 
 ### 2. 构建
@@ -59,7 +59,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 }
 ```
 
-允许创建 Issue、MR 和评论：
+允许创建分支、Issue、MR 和评论：
 
 ```json
 {
@@ -77,7 +77,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 }
 ```
 
-保存配置并重启 MCP 客户端。客户端成功连接后应能发现下文列出的 17 个工具。
+保存配置并重启 MCP 客户端。客户端成功连接后应能发现下文列出的 18 个工具。
 
 ### 4. 开始使用
 
@@ -87,6 +87,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 列出我最近活跃的 GitLab 项目。
 查看 team/payment 项目当前打开的 MR。
 读取 team/payment 的 main 分支上 src/main.rs。
+从 team/payment 的 main 创建 feature/retry-payment 分支。
 检查 team/payment 最近失败的 Pipeline 和对应 Job。
 在 team/payment 创建一个标题为“修复支付回调超时”的 Issue。
 给 team/payment 的 MR !128 评论“已完成本地验证”。
@@ -101,7 +102,7 @@ install -m 755 dist/gitlab-mcp /path/in/PATH/gitlab-mcp
 | `GITLAB_URL` | 是 | 无 | GitLab 实例根地址，例如 `https://gitlab.example.internal`；也可直接填写以 `/api/v4` 结尾的地址 |
 | `GITLAB_TOKEN` | 是 | 无 | GitLab 访问令牌，仅作为 HTTP Header 发送 |
 | `GITLAB_TOKEN_TYPE` | 否 | `private` | `private`/`pat` 使用 `PRIVATE-TOKEN`，`oauth`/`bearer` 使用 Bearer Token，`job` 使用 `JOB-TOKEN` |
-| `GITLAB_ALLOW_WRITE` | 否 | `false` | `1`、`true` 或 `yes` 时允许四个写工具，其余值均视为关闭 |
+| `GITLAB_ALLOW_WRITE` | 否 | `false` | `1`、`true` 或 `yes` 时允许五个写工具，其余值均视为关闭 |
 | `GITLAB_INSECURE` | 否 | `false` | `true` 时接受无效 TLS 证书，仅用于确有需要且风险可控的内网环境 |
 | `GITLAB_MAX_RESPONSE_BYTES` | 否 | `1048576` | 单次 GitLab 响应最大字节数，必须大于 0；用于限制 MCP 上下文消耗 |
 
@@ -340,6 +341,19 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 
 - GitLab API：`GET /projects/:id/repository/files/:file_path`。
 - 示例提示：`读取 platform/order-service 的 main 分支上 README.md，并解码内容。`
+
+#### `create_branch`（写操作）
+
+从已有分支、Tag 或 Commit SHA 创建新分支。需要 `GITLAB_ALLOW_WRITE=true` 和具备分支创建权限的 Token；不会覆盖已有分支，也不提供删除能力。Protected Branch 规则仍由 GitLab 强制执行。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `project` | 是 | string | 项目 ID 或完整路径 |
+| `branch` | 是 | string | 新分支名称，例如 `feature/retry-payment` |
+| `git_ref` | 是 | string | 起点分支、Tag 或 Commit SHA，例如 `main` |
+
+- GitLab API：`POST /projects/:id/repository/branches`。
+- 示例提示：`从 platform/order-service 的 main 创建 feature/retry-payment 分支。`
 
 ### CI/CD
 

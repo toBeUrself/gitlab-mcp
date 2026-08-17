@@ -141,6 +141,15 @@ struct PipelineJobs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct CreateBranch {
+    project: String,
+    #[schemars(description = "Name of the new branch, for example feature/retry-payment")]
+    branch: String,
+    #[schemars(description = "Existing branch, tag, or commit SHA used as the branch start point")]
+    git_ref: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CreateIssue {
     project: String,
     title: String,
@@ -424,6 +433,20 @@ impl GitLabMcp {
         .await
     }
 
+    #[tool(
+        description = "Create a repository branch from an existing branch, tag, or commit SHA. Requires GITLAB_ALLOW_WRITE=true"
+    )]
+    async fn create_branch(&self, Parameters(p): Parameters<CreateBranch>) -> ToolResult {
+        self.write(
+            format!(
+                "/projects/{}/repository/branches",
+                encode_segment(&p.project)
+            ),
+            json!({"branch": p.branch, "ref": p.git_ref}),
+        )
+        .await
+    }
+
     #[tool(description = "Create an issue. Requires GITLAB_ALLOW_WRITE=true")]
     async fn create_issue(&self, Parameters(p): Parameters<CreateIssue>) -> ToolResult {
         self.write(
@@ -479,7 +502,7 @@ impl GitLabMcp {
 
 #[tool_handler(
     name = "gitlab-mcp",
-    version = "0.1.0",
+    version = "0.2.0",
     instructions = "Access a self-managed GitLab instance. Prefer read tools first. Write tools require explicit server-side opt-in."
 )]
 impl ServerHandler for GitLabMcp {}
@@ -632,6 +655,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn creates_branch_from_ref_when_writes_are_enabled() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v4/projects/team%2Fservice/repository/branches")
+                .json_body(json!({
+                    "branch": "feature/retry-payment",
+                    "ref": "main"
+                }));
+            then.status(201).json_body(json!({
+                "name": "feature/retry-payment",
+                "commit": {"id": "abc123"}
+            }));
+        });
+        let mcp = GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 4096), true);
+        let result = mcp
+            .create_branch(Parameters(CreateBranch {
+                project: "team/service".into(),
+                branch: "feature/retry-payment".into(),
+                git_ref: "main".into(),
+            }))
+            .await
+            .unwrap();
+        mock.assert();
+        assert_ne!(result.is_error, Some(true));
     }
 
     #[tokio::test]
