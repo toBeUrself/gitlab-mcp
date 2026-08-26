@@ -256,6 +256,7 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 | `title` | 是 | string | 无 | MR 标题 |
 | `description` | 否 | string | 无 | MR 描述 |
 | `draft` | 否 | boolean | `false` | `true` 时自动给标题增加 `Draft:` 前缀 |
+| `squash` | 否 | boolean | GitLab 项目设置 | 合并时是否将所有 Commit 压缩为一个；项目强制规则可覆盖该值 |
 | `remove_source_branch` | 否 | boolean | GitLab 项目设置 | 合并后是否删除源分支 |
 
 - GitLab API：`POST /projects/:id/merge_requests`。
@@ -263,7 +264,7 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 
 #### `update_merge_request`（写操作）
 
-修改 MR 的标题、描述、Draft 状态、reviewer 或 assignee。需要 `GITLAB_ALLOW_WRITE=true`；至少要提供一个待修改字段。
+修改 MR 的标题、描述、Draft 状态、reviewer、assignee、squash 或源分支删除选项。需要 `GITLAB_ALLOW_WRITE=true`；至少要提供一个待修改字段。
 
 | 参数 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
@@ -274,11 +275,13 @@ MR 主接口失败时整个工具失败。可选接口失败时仍返回已有�
 | `draft` | 否 | boolean | `true` 转为 Draft，`false` 取消 Draft |
 | `reviewer_ids` | 否 | integer[] | GitLab 用户 ID 数组；空数组清空 reviewer |
 | `assignee_ids` | 否 | integer[] | GitLab 用户 ID 数组；空数组清空 assignee |
+| `squash` | 否 | boolean | 合并时是否将所有 Commit 压缩为一个；项目强制规则可覆盖该值 |
+| `remove_source_branch` | 否 | boolean | 合并后是否删除源分支 |
 
 GitLab REST 更新接口没有独立的 Draft 字段，工具通过标题前缀兼容处理。仅修改 `draft` 时会先读取当前标题，再增加或移除 `Draft:`/`WIP:` 等前缀。
 
 - GitLab API：`PUT /projects/:id/merge_requests/:iid`。
-- 示例提示：`把 platform/order-service 的 MR !128 转为非 Draft，并设置 reviewer ID 为 42 和 57。`
+- 示例提示：`把 platform/order-service 的 MR !128 转为非 Draft，开启 squash 和合并后删除源分支。`
 
 #### `add_merge_request_note`（写操作）
 

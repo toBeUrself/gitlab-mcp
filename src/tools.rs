@@ -276,6 +276,11 @@ struct CreateMergeRequest {
     description: Option<String>,
     #[schemars(description = "Create the merge request as a draft")]
     draft: Option<bool>,
+    #[schemars(
+        description = "Squash all commits into one commit when merging; project settings can override this value"
+    )]
+    squash: Option<bool>,
+    #[schemars(description = "Remove the source branch after the merge request is merged")]
     remove_source_branch: Option<bool>,
 }
 
@@ -298,6 +303,12 @@ struct UpdateMergeRequest {
         description = "GitLab user IDs to set as assignees; an empty array clears assignees"
     )]
     assignee_ids: Option<Vec<u64>>,
+    #[schemars(
+        description = "Squash all commits into one commit when merging; project settings can override this value"
+    )]
+    squash: Option<bool>,
+    #[schemars(description = "Remove the source branch after the merge request is merged")]
+    remove_source_branch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -397,7 +408,7 @@ impl GitLabMcp {
     }
 
     #[tool(
-        description = "Update a merge request title, description, Draft state, reviewers, or assignees. Requires GITLAB_ALLOW_WRITE=true"
+        description = "Update a merge request title, description, Draft state, reviewers, assignees, squash option, or source branch removal option. Requires GITLAB_ALLOW_WRITE=true"
     )]
     async fn update_merge_request(
         &self,
@@ -413,9 +424,11 @@ impl GitLabMcp {
             && p.draft.is_none()
             && p.reviewer_ids.is_none()
             && p.assignee_ids.is_none()
+            && p.squash.is_none()
+            && p.remove_source_branch.is_none()
         {
             return Err(invalid_params(
-                "at least one of title, description, draft, reviewer_ids, or assignee_ids must be provided",
+                "at least one of title, description, draft, reviewer_ids, assignee_ids, squash, or remove_source_branch must be provided",
             ));
         }
 
@@ -447,6 +460,8 @@ impl GitLabMcp {
         insert_json(&mut body, "description", p.description);
         insert_json(&mut body, "reviewer_ids", p.reviewer_ids);
         insert_json(&mut body, "assignee_ids", p.assignee_ids);
+        insert_json(&mut body, "squash", p.squash);
+        insert_json(&mut body, "remove_source_branch", p.remove_source_branch);
         self.update(path, Value::Object(body)).await
     }
 
@@ -799,7 +814,7 @@ impl GitLabMcp {
         };
         self.write(
             format!("/projects/{}/merge_requests", encode_segment(&p.project)),
-            json!({"source_branch": p.source_branch, "target_branch": p.target_branch, "title": title, "description": p.description, "remove_source_branch": p.remove_source_branch}),
+            json!({"source_branch": p.source_branch, "target_branch": p.target_branch, "title": title, "description": p.description, "squash": p.squash, "remove_source_branch": p.remove_source_branch}),
         ).await
     }
 
@@ -834,7 +849,7 @@ impl GitLabMcp {
 
 #[tool_handler(
     name = "gitlab-mcp",
-    version = "0.3.0",
+    version = "0.4.0",
     instructions = "Access a self-managed GitLab instance. Prefer read tools first. Write tools require explicit server-side opt-in."
 )]
 impl ServerHandler for GitLabMcp {}
@@ -1225,7 +1240,9 @@ mod tests {
                     "title": "Retry payment",
                     "description": "Ready for review",
                     "reviewer_ids": [10, 11],
-                    "assignee_ids": []
+                    "assignee_ids": [],
+                    "squash": true,
+                    "remove_source_branch": false
                 }));
             then.status(200)
                 .json_body(json!({"iid": 128, "draft": false}));
@@ -1241,11 +1258,50 @@ mod tests {
                 draft: Some(false),
                 reviewer_ids: Some(vec![10, 11]),
                 assignee_ids: Some(vec![]),
+                squash: Some(true),
+                remove_source_branch: Some(false),
             }))
             .await
             .unwrap();
         get.assert();
         update.assert();
+        assert_ne!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn creates_merge_request_with_squash_and_source_branch_removal() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v4/projects/team%2Fservice/merge_requests")
+                .json_body(json!({
+                    "source_branch": "feature/retry",
+                    "target_branch": "main",
+                    "title": "Retry payment",
+                    "description": null,
+                    "squash": true,
+                    "remove_source_branch": true
+                }));
+            then.status(201).json_body(json!({"iid": 129}));
+        });
+        let mcp =
+            GitLabMcp::with_write(GitLabClient::for_test(&server.base_url(), 64 * 1024), true);
+
+        let result = mcp
+            .create_merge_request(Parameters(CreateMergeRequest {
+                project: "team/service".into(),
+                source_branch: "feature/retry".into(),
+                target_branch: "main".into(),
+                title: "Retry payment".into(),
+                description: None,
+                draft: None,
+                squash: Some(true),
+                remove_source_branch: Some(true),
+            }))
+            .await
+            .unwrap();
+
+        create.assert();
         assert_ne!(result.is_error, Some(true));
     }
 

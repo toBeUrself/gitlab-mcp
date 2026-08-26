@@ -166,6 +166,7 @@ flowchart LR
 - `compare_refs` 默认使用 merge-base 语义（`from...to`），适合查看两个开发线的分叉变更；确认环境分支直接差异时使用 `straight=true`（`from..to`）。
 - `update_merge_request` 不伪造 GitLab REST 中不存在的 Draft 字段，而是管理 GitLab 识别的 `Draft:`/`WIP:` 标题前缀。仅修改 Draft 时会先 GET 当前 MR，再 PUT 新标题。
 - `reviewer_ids` 和 `assignee_ids` 仅接受 GitLab 用户 ID；省略代表不修改，空数组代表清空。
+- `create_merge_request` 和 `update_merge_request` 均可设置 `squash` 与 `remove_source_branch`；省略时保留 GitLab 项目默认值，而 squash 的项目强制规则仍具有最终决定权。
 - `create_tag` 省略 `message` 创建 lightweight tag，提供 `message` 则创建 annotated tag。
 - `get_job_trace` 返回文本日志，与 JSON API 共用同一响应大小上限。
 
